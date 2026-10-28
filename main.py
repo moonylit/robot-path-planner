@@ -141,6 +141,7 @@ class SearchProgress:
     explored: int
     runtime_ms: float
     peak_frontier: int
+    g_scores: dict[Cell, float]
 
 
 class SearchAlgorithm:
@@ -173,8 +174,10 @@ class SearchAlgorithm:
             open_set.discard(current)
             closed.add(current)
             search_runtime += time.perf_counter() - phase_started
-            yield SearchProgress(set(open_set), set(closed), len(closed),
-                                 search_runtime * 1000, peak_frontier)
+            # These sets/maps are stable while the generator is suspended; the
+            # renderer reads them before the next expansion mutates them.
+            yield SearchProgress(open_set, closed, len(closed),
+                                 search_runtime * 1000, peak_frontier, costs)
 
             if current == goal:
                 phase_started = time.perf_counter()
@@ -291,10 +294,13 @@ class Renderer:
     def __init__(self, screen: pygame.Surface) -> None:
         self.screen = screen
         self.small = pygame.font.SysFont("segoeui", 13)
+        self.tiny = pygame.font.SysFont("segoeui", 9)
         self.body = pygame.font.SysFont("segoeui", 15)
         self.title = pygame.font.SysFont("segoeui", 21, bold=True)
         self.section_font = pygame.font.SysFont("segoeui", 12, bold=True)
+        self.heat_labels: dict[str, pygame.Surface] = {}
         self.buttons: dict[str, Button] = {}
+        self.help_close_rect = pygame.Rect(0, 0, 0, 0)
         self._build_buttons()
         self.terrain_tints = {
             "sand": pygame.Surface((CELL_SIZE - 1, CELL_SIZE - 1), pygame.SRCALPHA),
@@ -305,6 +311,8 @@ class Renderer:
         self.robot_glow = pygame.Surface((40, 40), pygame.SRCALPHA)
         pygame.draw.circle(self.robot_glow, (32, 222, 204, 35), (20, 20), 19)
         pygame.draw.circle(self.robot_glow, (32, 222, 204, 70), (20, 20), 13)
+        self.modal_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.modal_overlay.fill((6, 11, 19, 205))
 
     def _build_buttons(self) -> None:
         x0, w, gap = GRID_WIDTH + 16, SIDEBAR_WIDTH - 32, 8
@@ -313,6 +321,8 @@ class Renderer:
             self.buttons[key] = Button(key, label, pygame.Rect(x, y, width, height))
 
         half = (w - gap) // 2
+        add("values", "Toggle Values", GRID_WIDTH + 156, 14, 102, 25)
+        add("help", "Help [H/?]", GRID_WIDTH + 266, 14, 68, 25)
         add("algo_astar", "A* Search", x0, 69, half)
         add("algo_ucs", "Uniform Cost (UCS)", x0 + half + gap, 69, half)
         add("brush_start", "Start / Goal", x0, 123, half)
@@ -340,6 +350,7 @@ class Renderer:
         screen = self.screen
         screen.fill(BG)
         pygame.draw.rect(screen, EMPTY, (0, 0, GRID_WIDTH, GRID_HEIGHT))
+        heat_scale = max(app.g_scores.values(), default=1.0)
         for r in range(ROWS):
             for c in range(COLS):
                 cell = (r, c)
@@ -363,6 +374,17 @@ class Renderer:
                     ink = (75, 63, 39) if terrain == "sand" else (25, 55, 80)
                     glyph = self.small.render(number, True, ink)
                     screen.blit(glyph, glyph.get_rect(center=(pos[0] + 9, pos[1] + 9)))
+                if app.show_values and not app.grid.is_wall(cell) and cell in app.g_scores:
+                    value = app.g_scores[cell]
+                    ratio = min(1.0, value / max(heat_scale, 1e-9))
+                    heat = (round(35 + 200 * ratio), round(175 - 55 * ratio), round(220 - 145 * ratio))
+                    pygame.draw.rect(screen, heat, (c * CELL_SIZE + 2, r * CELL_SIZE + 2,
+                                                    CELL_SIZE - 3, CELL_SIZE - 3))
+                    text = f"{value:.0f}"
+                    if text not in self.heat_labels:
+                        self.heat_labels[text] = self.tiny.render(text, True, (18, 27, 39))
+                    glyph = self.heat_labels[text]
+                    screen.blit(glyph, glyph.get_rect(center=(c * CELL_SIZE + 10, r * CELL_SIZE + 10)))
         for c in range(COLS + 1):
             pygame.draw.line(screen, GRID_LINE, (c * CELL_SIZE, 0), (c * CELL_SIZE, GRID_HEIGHT))
         for r in range(ROWS + 1):
@@ -371,6 +393,8 @@ class Renderer:
         self.draw_marker(app.grid.goal, RED, "G")
         self.draw_robot(app)
         self.draw_sidebar(app)
+        if app.show_help:
+            self.draw_help_modal()
 
     def draw_marker(self, cell: Cell | None, color: tuple[int, int, int], text: str) -> None:
         if cell is None:
@@ -422,6 +446,8 @@ class Renderer:
             label = button.label
             if key == "movement":
                 label = "8-Directional" if app.diagonal else "4-Directional"
+            elif key == "values":
+                label = "Values: On" if app.show_values else "Toggle Values"
             rendered = self.small.render(label, True, TEXT if active or hovered else (202, 212, 225))
             screen.blit(rendered, rendered.get_rect(center=button.rect.center))
 
@@ -468,22 +494,77 @@ class Renderer:
             ("OPTIMAL COST", cost_text),
         ]
         for index, (label, value) in enumerate(rows):
-            yy = y + 13 + index * 33
+            yy = y + 13 + index * 27
             self.label(label, (x + 11, yy), (132, 153, 177), self.section_font)
             self.label(value, (x + 115, yy - 1), TEXT, self.small)
         path_cells = str(app.path_length) if app.path_length is not None else "—"
         path_cost = f"{app.path_cost:.3f}" if app.path_cost is not None else "—"
-        self.label("CURRENT PATH", (x + 11, y + 178), (132, 153, 177), self.section_font)
-        self.label(f"{path_cells} cells  ·  cost {path_cost}", (x + 115, y + 177), TEXT, self.small)
-        pygame.draw.line(self.screen, (56, 76, 98), (x + 10, y + 208), (x + width - 10, y + 208), 1)
-        self.label(f"ROBOT COST  {app.robot_cost:.3f}", (x + 11, y + 216), (79, 231, 205), self.body)
+        self.label("CURRENT PATH", (x + 11, y + 148), (132, 153, 177), self.section_font)
+        self.label(f"{path_cells} cells  ·  cost {path_cost}", (x + 115, y + 147), TEXT, self.small)
+        hover = app.hover_info(pygame.mouse.get_pos()) if app.show_values else None
+        if hover:
+            cell, values = hover
+            g = "—" if values["g"] is None else f"{values['g']:.9g}"
+            h = f"{values['h']:.9g}"
+            f = "—" if values["f"] is None else f"{values['f']:.9g}"
+            hover_text = f"g {g} · h {h} · f {f}"
+            self.label(f"CELL {cell[0]},{cell[1]}", (x + 11, y + 174), (132, 153, 177), self.section_font)
+            self.label(hover_text, (x + 83, y + 174), TEXT, self.tiny)
+        else:
+            hover_text = "Press V · hover a grid cell"
+            self.label("HOVER g/h/f", (x + 11, y + 174), (132, 153, 177), self.section_font)
+            self.label(hover_text, (x + 115, y + 173), TEXT, self.small)
+        pygame.draw.line(self.screen, (56, 76, 98), (x + 10, y + 201), (x + width - 10, y + 201), 1)
+        self.label(f"ROBOT COST  {app.robot_cost:.3f}", (x + 11, y + 207), (79, 231, 205), self.body)
         if app.searching:
             status = f"{app.algorithm.name} expanding · {app.explored:,} nodes"
         elif app.robot_path:
             status = "Robot traversing optimal path" if app.robot_is_moving else app.status
         else:
             status = app.status
-        self.label(status[:39], (x + 11, y + 237), MUTED, self.small)
+        self.label(status[:39], (x + 11, y + 231), MUTED, self.small)
+
+    def draw_help_modal(self) -> None:
+        self.screen.blit(self.modal_overlay, (0, 0))
+        modal = pygame.Rect((WIDTH - 650) // 2, (HEIGHT - 580) // 2, 650, 580)
+        pygame.draw.rect(self.screen, (30, 42, 58), modal, border_radius=16)
+        pygame.draw.rect(self.screen, (84, 112, 141), modal, 1, border_radius=16)
+        self.label("QUICK HELP · ROBOT PATH PLANNING", (modal.x + 28, modal.y + 23), TEXT, self.title)
+        self.label("MOUSE", (modal.x + 28, modal.y + 70), (79, 231, 205), self.section_font)
+        mouse_lines = [
+            "Start / Goal brush: click to place endpoints; later clicks cycle them.",
+            "Left-click or drag paints the selected Wall, Sand, Water, or Eraser brush.",
+            "Right-click erases a cell; right-click a marker to remove it.",
+            "Click a remaining route cell to add a dynamic wall and re-plan from the robot.",
+            "Normal terrain costs 1 · Sand costs 3 · Water costs 5 · Walls are blocked.",
+        ]
+        self._modal_lines(mouse_lines, modal.x + 28, modal.y + 94)
+        self.label("KEYBOARD SHORTCUTS", (modal.x + 28, modal.y + 228), (79, 231, 205), self.section_font)
+        key_lines = [
+            "A / U: choose A* / UCS      D: 4- or 8-directional movement",
+            "W / S / E: Wall / Sand / Water brush      M / T: maze / terrain map",
+            "Space: run search      X: benchmark both      R: reset path      C: clear all",
+            "1–4: animation speed      V: g(n) heatmap and hover inspector",
+            "H or ?: toggle this help panel      Esc: close this panel",
+        ]
+        self._modal_lines(key_lines, modal.x + 28, modal.y + 252)
+        self.label("SEARCH FORMULAS", (modal.x + 28, modal.y + 392), (79, 231, 205), self.section_font)
+        formula_lines = [
+            "UCS: f(n) = g(n)      A*: f(n) = g(n) + h(n)",
+            "4-dir h: Manhattan distance      8-dir h: Octile distance",
+            "Diagonal move cost = √2 × destination terrain cost.",
+            "A* heuristics are scaled by min terrain cost = 1.0, preserving admissibility.",
+        ]
+        self._modal_lines(formula_lines, modal.x + 28, modal.y + 416)
+        self.help_close_rect = pygame.Rect(modal.right - 118, modal.bottom - 48, 90, 30)
+        pygame.draw.rect(self.screen, (41, 62, 76), self.help_close_rect, border_radius=7)
+        pygame.draw.rect(self.screen, (49, 210, 190), self.help_close_rect, 1, border_radius=7)
+        label = self.small.render("Close · Esc", True, TEXT)
+        self.screen.blit(label, label.get_rect(center=self.help_close_rect.center))
+
+    def _modal_lines(self, lines: list[str], x: int, y: int) -> None:
+        for index, line in enumerate(lines):
+            self.label(line, (x, y + index * 23), (218, 227, 238), self.small)
 
 
 class PathPlanningApp:
@@ -507,6 +588,8 @@ class PathPlanningApp:
         self.benchmark_active = False
         self.benchmark_grid: Grid | None = None
         self.search_grid: Grid | None = None
+        self.show_values = False
+        self.show_help = False
         self.reset_path()
 
     def reset_path(self) -> None:
@@ -519,6 +602,7 @@ class PathPlanningApp:
         self.runtime_ms: float | None = None
         self.peak_frontier = 0
         self.current_runtime_ms = 0.0
+        self.g_scores: dict[Cell, float] = {}
         self.status = "Place start and goal"
         self.searching = False
         self.search_iterator = None
@@ -617,6 +701,7 @@ class PathPlanningApp:
             self.open_set, self.closed, self.explored = step.open_set, step.closed, step.explored
             self.peak_frontier = step.peak_frontier
             self.current_runtime_ms = step.runtime_ms
+            self.g_scores = step.g_scores
 
     def finish_search(self, result: SearchResult | None) -> None:
         self.searching = False
@@ -687,6 +772,61 @@ class PathPlanningApp:
         diagonal = here[0] != nxt[0] and here[1] != nxt[1]
         return self.robot_grid.terrain_cost(nxt) * (DIAGONAL_COST if diagonal else 1.0)
 
+    def hover_info(self, mouse_pos: tuple[int, int]) -> tuple[Cell, dict[str, float | None]] | None:
+        cell = self.board_cell(mouse_pos)
+        if cell is None or self.grid.goal is None:
+            return None
+        g = self.g_scores.get(cell)
+        h = self.algorithm.heuristic(cell, self.grid.goal, self.diagonal)
+        f = None if g is None else g + (h if self.algorithm.name == "A*" else 0.0)
+        return cell, {"g": g, "h": h, "f": f}
+
+    def remaining_route_index(self) -> int:
+        if not self.robot_path or self.robot_started is None:
+            return 0
+        edges = len(self.robot_path) - 1
+        if edges <= 0:
+            return 0
+        elapsed = max(0.0, time.perf_counter() - self.robot_started)
+        if elapsed >= edges * self.robot_step_duration:
+            # A static displayed path can still be edited: replay its traversal
+            # from the original start to demonstrate a fresh detour.
+            return 0
+        segment_float = elapsed / self.robot_step_duration
+        segment = min(edges - 1, int(segment_float))
+        if segment_float - segment >= 0.5:
+            segment += 1
+        return segment
+
+    def inject_dynamic_obstacle(self, cell: Cell) -> bool:
+        if not self.robot_path or cell not in self.robot_path or self.grid.goal is None:
+            return False
+        index = self.remaining_route_index()
+        if cell not in self.robot_path[index:]:
+            return False
+        source = self.robot_path[index]
+        goal = self.grid.goal
+        self.grid.start = source
+        # A robot may be standing on the injected cell; it must be able to
+        # leave that coordinate, so clear its source after placing the wall.
+        spot = self.grid.spots[cell[0]][cell[1]]
+        spot.wall = True
+        spot.terrain = "normal"
+        self.grid.spots[source[0]][source[1]].wall = False
+        self.grid.goal = goal
+        self.marker_next = "goal"
+        self.benchmark_results = {}
+        self.benchmark_queue = []
+        self.benchmark_active = False
+        self.start_search()
+        self.robot_path = [source]
+        self.robot_grid = self.grid.clone()
+        self.robot_started = time.perf_counter()
+        self.robot_is_moving = False
+        self.robot_cost = 0.0
+        self.status = "Dynamic obstacle detected · re-planning"
+        return True
+
     def button_active(self, key: str) -> bool:
         if key == "algo_astar":
             return self.algorithm.name == "A*"
@@ -698,6 +838,10 @@ class PathPlanningApp:
             return self.brush == key.removeprefix("brush_")
         if key.startswith("speed_"):
             return self.speed == int(key[-1])
+        if key == "values":
+            return self.show_values
+        if key == "help":
+            return self.show_help
         return False
 
     def activate_button(self, key: str) -> None:
@@ -732,6 +876,10 @@ class PathPlanningApp:
             self.status = "8-directional movement" if self.diagonal else "4-directional movement"
         elif key.startswith("speed_"):
             self.speed = int(key[-1])
+        elif key == "values":
+            self.show_values = not self.show_values
+        elif key == "help":
+            self.show_help = not self.show_help
 
     def clear_board(self) -> None:
         self.grid.clear()
@@ -755,6 +903,8 @@ class PathPlanningApp:
             self.reset_path_only()
             self.status = "Cell erased"
         elif event.button == 1:
+            if self.inject_dynamic_obstacle(cell):
+                return
             self.paint_cell(cell)
 
     def paint_cell(self, cell: Cell) -> None:
@@ -786,14 +936,30 @@ class PathPlanningApp:
             pygame.K_e: "brush_water", pygame.K_m: "maze", pygame.K_t: "terrain",
             pygame.K_SPACE: "run", pygame.K_x: "benchmark", pygame.K_r: "reset",
             pygame.K_c: "clear", pygame.K_d: "movement",
+            pygame.K_v: "values", pygame.K_h: "help",
             pygame.K_1: "speed_1", pygame.K_2: "speed_2",
             pygame.K_3: "speed_3", pygame.K_4: "speed_4",
         }
         for event in pygame.event.get():
+            if self.show_help:
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_h, pygame.K_QUESTION):
+                        self.show_help = False
+                    continue
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if getattr(self.renderer, "help_close_rect", pygame.Rect(0, 0, 0, 0)).collidepoint(event.pos):
+                        self.show_help = False
+                    continue
+                if event.type == pygame.QUIT:
+                    return False
+                continue
             if event.type == pygame.QUIT:
                 return False
             if event.type == pygame.KEYDOWN and event.key in shortcuts:
                 self.activate_button(shortcuts[event.key])
+            elif event.type == pygame.KEYDOWN and (event.key == pygame.K_QUESTION or
+                    (event.key == pygame.K_SLASH and event.mod & pygame.KMOD_SHIFT)):
+                self.show_help = not self.show_help
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.pos[0] >= GRID_WIDTH:
                     for key, button in self.renderer.buttons.items():

@@ -1,102 +1,178 @@
-# Robot Path Planning Simulator - INT3120 AI Mini Project
+# Robot Path Planning Simulator
 
-**Group 7 | Mohammad Ayaan & Sarath Mohanraj**
+## Project metadata
 
-An interactive Pygame application for exploring informed and uninformed search on a 40 × 40 grid. The 800 × 800 grid sits beside a clickable dark control sidebar. Build obstacle and weighted terrain maps, generate a perfect maze with randomized depth-first search, compare A* and Uniform Cost Search, and watch a robot traverse the resulting route.
-
-## Project details
-
-| Area | Implementation |
+| Field | Details |
 |---|---|
-| Language | Python 3.10+ |
-| GUI and rendering | Pygame 2.x, 800 × 800 grid plus 350-pixel control sidebar, 60 FPS event loop |
-| External dependencies | `pygame` only (`requirements.txt`) |
-| Priority frontier | `heapq`, with a monotonic tie-break counter; insertion and extraction are O(log n) |
-| Search bookkeeping | Dictionaries for best-known `g(n)` costs and parent pointers; sets for open and closed membership |
-| Runtime measurement | `time.perf_counter()`; search compute time in milliseconds, excluding UI animation waits |
-| Frontier memory | Tracks the maximum size of the unique open-set frontier during each search |
-| Terrain costs | Normal 1.0; sand 3.0; water 5.0; walls are impassable |
-| Movement costs | Orthogonal step = terrain cost; diagonal step = √2 × destination terrain cost, with corner cutting prevented |
-| Procedural maps | Recursive-backtracker perfect maze and clustered weighted terrain scatter |
+| Course | INT3120 - Artificial Intelligence |
+| Allotment | Project #14 — Robot Path Planning Simulator |
+| Section | IT V Semester - Section C (Jul-Nov 2026) |
+| Submission date | 02 Nov 2026 |
+| Maximum marks | 15 |
+| Team | Group 7 — Mohammad Ayaan & Sarath Mohanraj |
 
-## Algorithms
+## Executive summary
 
-Both algorithms use the same priority-queue graph-search engine, weighted destination-cell cost model, and parent-pointer path reconstruction. Every move cost is positive. A cell is expanded at most once; improved frontier entries are pushed again and stale entries are skipped when popped. The start cell has no entry cost; each move pays the destination cell's terrain cost.
+This project demonstrates autonomous mobile-robot navigation on a discrete 2D grid. Cells represent free space, impassable obstacles, or weighted terrain. A* and Uniform Cost Search (UCS) plan minimum-cost routes using four- or eight-directional movement. A Pygame interface visualizes the search, compares both algorithms, allows dynamic obstacle injection, and animates the robot as it follows the route while reporting its accumulated cost.
 
-### Uniform Cost Search (UCS)
+## Problem statement
 
-UCS orders the frontier by accumulated cost from the start:
+Given a start cell, goal cell, movement model, and grid containing walls and terrain costs, find a collision-free path with minimum total travel cost. The simulator also demonstrates how a planner responds when a new obstacle invalidates the route while the robot is moving.
 
-\[
+## Technology stack
+
+| Component | Implementation |
+|---|---|
+| Language | Python 3.10+ (benchmarked here with Python 3.13.7) |
+| Graphics and interaction | Pygame 2.x; 800×800 grid, 350-pixel sidebar, 60 FPS event loop |
+| Search frontier | `heapq` min-heap with a monotonic tie-break counter; push/pop O(log V) |
+| State lookup | Dictionaries for best-known path costs and parent pointers, plus sets for open/closed membership; average O(1) membership/lookups |
+| Standard-library utilities | `math` for movement/heuristics, `random` for seeded map generation, `time` for profiling, `tracemalloc` for allocation peaks |
+| Runtime profiling | `time.perf_counter()`; search compute time excludes animated frame waits |
+| Frontier memory | Maximum unique open-set size recorded per run |
+| Python allocation profiling | `tracemalloc` in `benchmark_runner.py`, collected separately from timed runs |
+| Automated verification | Python standard library `unittest`; tests do not open a display window |
+| External packages | `pygame` only, listed in `requirements.txt` |
+
+## System architecture
+
+```mermaid
+flowchart LR
+    UI[Input Controller<br/>Sidebar · mouse · keyboard] --> MODEL[Grid & Terrain State Model]
+    MODEL --> SEARCH[Search Engine<br/>A* / UCS]
+    SEARCH --> VIS[60 FPS Pygame Renderer<br/>open · closed · path · heatmap]
+    SEARCH --> PLAN[Dynamic Re-planner]
+    MODEL --> PLAN
+    PLAN --> SEARCH
+    SEARCH --> AGENT[Animated Robot Agent<br/>pose · heading · accumulated cost]
+    AGENT --> VIS
+    VIS --> UI
+```
+
+The controller edits the grid and selects an algorithm. Search yields progress states for rendering. A dynamic obstacle on the robot's remaining route starts a new search from the robot's nearest grid cell. When search completes, the agent animates the reconstructed route. Benchmark mode runs A* and UCS in sequence against the same cloned grid state.
+
+## Mathematical model
+
+### Terrain and movement costs
+
+The start cell has no entry charge. Moving to a neighboring destination cell costs:
+
+| Destination cell | Entry cost |
+|---|---:|
+| Normal | 1.0 |
+| Sand | 3.0 |
+| Water | 5.0 |
+| Wall | Impassable |
+
+In four-directional mode, an edge cost equals the destination terrain cost. In eight-directional mode, a diagonal edge costs `√2 × destination terrain cost`. Corner cutting is disallowed. The path cost `g(goal)` is the sum of edge costs from start to goal.
+
+### Uniform Cost Search
+
+UCS orders the frontier using accumulated cost only:
+
+$$
 f(n) = g(n)
-\]
+$$
 
-It is Dijkstra's algorithm on this grid. With equal orthogonal costs it expands an approximately circular wave; with diagonal movement, the wave reflects the lower diagonal cost. UCS is complete and returns a least-cost path when all edge costs are positive.
+All edge costs satisfy `c(n,n′) ≥ ε > 0` (`ε = 1` in this model), and the grid has finite branching. Therefore only finitely many nodes can have path cost below any fixed bound, so UCS is complete. When a goal is removed from the minimum-priority frontier, no cheaper frontier route can remain; consequently the returned route is optimal.
 
 ### A* Search
 
-A* orders the frontier by:
+A* uses:
 
-\[
+$$
 f(n) = g(n) + h(n)
-\]
+$$
 
-- **4-directional:** `h(n) = |Δrow| + |Δcolumn|` (Manhattan distance).
-- **8-directional:** `h(n) = max(Δrow, Δcolumn) + (√2 − 1) min(Δrow, Δcolumn)` (Octile distance).
+The heuristic is selected to match the movement model:
 
-Both distance estimates are multiplied by the minimum terrain cost, 1.0. This accounts for weighted cells without overestimating a route that could remain on normal terrain.
+$$
+h_M(n) = |x_n-x_g| + |y_n-y_g| \qquad \text{(4-directional)}
+$$
 
-### Heuristic admissibility and consistency
+$$
+h_O(n) = \max(\Delta x,\Delta y) + (\sqrt{2}-1)\min(\Delta x,\Delta y)
+\qquad \text{(8-directional)}
+$$
 
-In 4-directional mode, any route must make at least `|Δrow| + |Δcolumn|` unit moves. Each step costs at least 1.0, so scaled Manhattan distance never exceeds the remaining weighted route cost. A single orthogonal move changes Manhattan distance by at most one; the destination step costs at least 1.0, so the heuristic is consistent.
+Both estimates are multiplied by the minimum terrain entry cost, `min(c) = 1.0`. Sand and water can only increase edge costs. Thus, even if the cheapest remaining route uses only normal cells, these scaled distances do not overestimate its cost:
 
-In 8-directional mode, Octile distance is the exact obstacle-free cost with orthogonal moves costing 1 and diagonals √2. It is also consistent across each allowed move. Terrain multipliers are at least 1, so scaling by the minimum terrain cost preserves the lower bound and consistency. Preventing corner cutting removes possible routes but does not invalidate the bound.
+$$
+h(n) \leq h^*(n)
+$$
 
-Both heuristics are zero at the goal. Thus A* with these heuristics returns an optimal least-cost path. UCS is equivalent to using `h(n) = 0`.
+Manhattan distance is consistent for orthogonal steps. Octile distance is consistent for orthogonal and √2 diagonal steps; multiplying by the minimum cost preserves consistency. A* therefore remains optimal for the weighted grid.
 
-## Benchmark and robot traversal
+### Complexity
 
-Choose **Benchmark Both (X)** or press **X**. A* and then UCS run sequentially against the same captured grid, terrain, endpoints, and movement mode. The live analytics card compares explored nodes and percentage of search space saved by A*, measured execution time, peak open-set size, and final path costs. The card marks the optimal costs as matching when both algorithms find the same least-cost total. Search timing excludes the pauses used to animate frontier expansion.
+Let `b` be the branching factor, `C*` the optimal path cost, `ε` the minimum positive edge cost, `V` the number of cells, and `E` the neighbor edges.
 
-After a normal search, or after both benchmark runs complete, a glowing robot icon moves along the reconstructed route. Its facing indicator follows the route direction, and the analytics card updates the accumulated terrain-weighted cost as it crosses cells.
+| Algorithm / view | Time | Space | Notes |
+|---|---|---|---|
+| UCS tree-search bound | `O(b^(1 + floor(C*/ε)))` | Same order | Positive minimum edge cost bounds nodes expanded below the optimal goal cost |
+| A* tree-search bound | Exponential in solution depth in the worst case | Exponential in depth | An admissible heuristic reduces the effective branching factor when it provides useful goal direction |
+| This finite-grid heap implementation | `O((V+E) log V)` worst case | `O(V+E)` | Consistent A* heuristics allow a cell to be closed once; UCS is Dijkstra's algorithm on this graph |
 
-## Performance comparison
+## Empirical benchmark results
 
-| Measure | A* | UCS |
-|---|---|---|
-| Frontier priority | `g(n) + h(n)` | `g(n)` |
-| Theoretical search behavior | Uses goal direction and can avoid costly terrain | Expands by accumulated terrain cost without goal direction |
-| Worst-case time | O((V + E) log V) with a binary heap | O((V + E) log V) with a binary heap |
-| Worst-case memory | O(V + E) | O(V + E) |
-| Empirical nodes, runtime, frontier size | **Benchmark Both (X)** reports explored nodes, compute milliseconds, and peak open-set size | The same captured-board run reports UCS metrics after A* finishes |
+Generated by `python benchmark_runner.py` on Python 3.13.7 / Pygame 2.6.1. Runtime is the mean of three `time.perf_counter()` runs. `tracemalloc` peak memory is measured in a separate pass to avoid slowing the timed run. Node savings are `(UCS nodes − A* nodes) / UCS nodes × 100`.
 
-Empirical results depend on the obstacle layout, movement mode, and machine. Press **X** to run both algorithms consecutively on the current board. The resulting metrics remain visible for direct comparison; each runtime measures the search iterator, not drawing or animation time.
+| Scenario | Algorithm | Nodes Explored | Execution (ms, mean of 3) | Peak Frontier | Path Cost | Nodes Saved by A* | Peak Python Memory (KiB) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Open unobstructed grid · diagonal corner-to-corner | A* | 40 | 2.4238 | 155 | 55.154329 | 97.50% | 223.77 |
+| Open unobstructed grid · diagonal corner-to-corner | UCS | 1,600 | 18.3790 | 79 | 55.154329 | — | 526.65 |
+| Procedural DFS maze · seed 1402 | A* | 355 | 3.4205 | 6 | 248.000000 | 4.57% | 260.12 |
+| Procedural DFS maze · seed 1402 | UCS | 372 | 3.4700 | 5 | 248.000000 | — | 259.70 |
+| Weighted swamp and sand · seed 4205 | A* | 788 | 8.0762 | 147 | 90.000000 | 49.10% | 330.77 |
+| Weighted swamp and sand · seed 4205 | UCS | 1,548 | 11.9445 | 69 | 90.000000 | — | 525.16 |
+| U-shaped concave trap | A* | 290 | 2.5899 | 41 | 38.000000 | 67.88% | 214.61 |
+| U-shaped concave trap | UCS | 903 | 6.4993 | 42 | 38.000000 | — | 318.96 |
 
-## Controls
+The open grid highlights the benefit of an accurate diagonal heuristic. The DFS maze has a narrow corridor and a smaller node-count gap. The weighted map and U-trap show cases where goal-directed search avoids exploring much of the remaining map. Rerun the benchmark runner to regenerate the table for the current machine; runtimes and memory values will vary by environment.
 
-| Sidebar button | Action |
+## User guide
+
+### Sidebar and keyboard controls
+
+| Control | Action |
 |---|---|
-| **A* Search / Uniform Cost (UCS)** | Select the search algorithm |
-| **Start / Goal, Wall, Sand, Water, Eraser** | Select the grid brush |
-| **DFS Maze (M) / Terrain Map (T)** | Generate a map |
-| **Run Search (Space) / Benchmark Both (X)** | Run one search or compare both |
-| **Reset Path (R) / Clear All (C)** | Clear search overlays or reset the board |
-| **Movement** | Toggle 4-directional / 8-directional movement |
-| **1 Slow / 2 Normal / 3 Fast / 4 Instant** | Set search animation speed |
+| **A* Search** / **Uniform Cost (UCS)** · `A` / `U` | Select planner |
+| **Start / Goal** brush | Click to place start then goal; subsequent clicks move them in turn |
+| **Wall** / **Sand (3×)** / **Water (5×)** · `W` / `S` / `E` | Select painting brush |
+| **Eraser** or right-click | Remove terrain/walls; right-click a marker to remove it |
+| **DFS Maze (M)** · `M` | Generate a reproducible-per-seed randomized DFS perfect maze |
+| **Terrain Map (T)** · `T` | Scatter weighted sand and water patches |
+| **Run Search (SPACE)** · `Space` | Animate the selected algorithm |
+| **Benchmark Both (X)** · `X` | Run A*, then UCS, on the same captured grid |
+| **Reset Path (R)** · `R` | Clear path, robot, and search state while preserving the map |
+| **Clear All (C)** · `C` | Clear the map and endpoints |
+| **Movement** · `D` | Toggle 4- and 8-directional movement |
+| **1 Slow / 2 Normal / 3 Fast / 4 Instant** | Set search expansion speed |
+| **Toggle Values** · `V` | Show the explored-cell `g(n)` heatmap and hover inspector |
+| **Help** · `H` or `?` | Open the controls and formula modal; `Esc` closes it |
 
-Keyboard shortcuts remain available: **A**, **U**, **W**, **S**, **E**, **D**, **M**, **T**, **Space**, **X**, **R**, **C**, and **1–4**.
+### Dynamic obstacle demonstration
 
-On the grid, select **Start / Goal** and click to place the start then goal; subsequent clicks cycle their positions. Select a brush to paint cells by clicking or dragging. Right-click erases a cell or endpoint.
+Place endpoints, run a search, and let the robot begin traversing. Left-click a cell on the untraversed portion of the displayed route. The simulator inserts a wall, snaps the robot to its nearest grid cell, invalidates the old route, and starts a new search with the selected algorithm. The robot then animates the detour and continues accumulating destination terrain cost. Clicking the route after traversal has finished replays from the route's start for demonstration.
 
-Search visualization uses light blue for the open set, orange for the closed set, and teal for the reconstructed lowest-cost path. Sand and water cells are tinted and labeled with their entry cost. The sidebar analytics shows comparison metrics and the robot's live accumulated path cost.
+### Heatmap and hover inspector
 
-## Run the project
+Toggle **Values** or press `V`. Explored cells are colored by accumulated `g(n)` and show a compact numeric value. Hover over any grid cell to inspect its exact stored `g(n)`, heuristic `h(n)`, and priority `f(n)` in the sidebar. For UCS, `h(n)=0` and `f(n)=g(n)`.
 
-Python 3.10 or newer is recommended.
+## Automated tests and benchmark runner
 
 ```bash
-python -m pip install -r requirements.txt
+python -m unittest test_algorithms.py
+python benchmark_runner.py
 python main.py
 ```
 
-Set endpoints with the **Start / Goal** button, select a brush in the sidebar, and paint by clicking or dragging. Use the sidebar controls or keyboard to generate a perfect DFS maze, scatter weighted terrain, select movement and animation modes, run a search, or compare A* and UCS.
+`test_algorithms.py` runs headlessly and verifies unweighted and weighted optimality, node efficiency, unreachable goals, and diagonal movement costs. `benchmark_runner.py` evaluates four fixed 40×40 scenarios and writes its Markdown table to `benchmark_results.md`.
+
+## Viva-voce quick defense
+
+1. **When does A* behave like UCS?** When its heuristic is zero for every node, so the priority becomes `f(n)=g(n)`.
+2. **Why does UCS expand in circular waves on an open grid?** With uniform step costs, all cells at the same distance have equal accumulated cost; the frontier expands equal-cost contours outward. In 8-dir mode the contours follow the diagonal-aware movement metric.
+3. **What if a heuristic overestimates the remaining cost?** A* can pop a goal before a cheaper route is considered, so optimality is no longer guaranteed.
+4. **Why is the weighted-grid heuristic still admissible?** The distance estimate is multiplied by the minimum terrain cost, 1.0. Entering sand or water never costs less, so the estimate remains a lower bound.
+5. **What happens when a new wall blocks the robot's route?** The route is invalidated and the active planner recomputes a least-cost route from the robot's current grid cell to the goal; the agent then follows the new path.
