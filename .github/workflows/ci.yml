@@ -1,0 +1,23 @@
+name: Robot Path Planner CI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run algorithm and preset tests
+        run: python -m unittest test_algorithms.py
+      - name: Run benchmark suite
+        run: python benchmark_runner.py

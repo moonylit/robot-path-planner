@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import json
 import math
+import os
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterator
 
 import pygame
@@ -281,6 +284,44 @@ class MazeGenerator:
                             grid.spots[r][c].terrain = terrain
 
 
+VIVA_PRESET_NAMES = {
+    "F1": "The U-Trap (Concave Obstacle)",
+    "F2": "The Swamp Detour (Weighted Cost Proof)",
+    "F3": "The Narrow Bottleneck",
+    "F4": "Open Field Race",
+}
+
+
+def load_viva_preset(grid: Grid, preset: str) -> bool:
+    """Load a deterministic 40x40 viva map; return its diagonal-mode setting."""
+    if preset not in VIVA_PRESET_NAMES:
+        raise ValueError(f"Unknown viva preset: {preset}")
+    grid.clear()
+    if preset == "F1":
+        # The opening of the U faces north; a goal to the right is deceptively
+        # close by h(n), but the optimal route must back out and go around.
+        grid.start, grid.goal = (20, 18), (20, 34)
+        for row in range(10, 26):
+            grid.set_wall((row, 13), True)
+            grid.set_wall((row, 25), True)
+        for col in range(13, 26):
+            grid.set_wall((25, col), True)
+        return False
+    if preset == "F2":
+        grid.start, grid.goal = (20, 3), (20, 36)
+        for col in range(4, 36):
+            grid.set_terrain((20, col), "water" if col % 2 else "sand")
+        return False
+    if preset == "F3":
+        grid.start, grid.goal = (10, 4), (10, 35)
+        for row in range(ROWS):
+            if row != 20:
+                grid.set_wall((row, 20), True)
+        return False
+    grid.start, grid.goal = (0, 0), (39, 39)
+    return True
+
+
 @dataclass
 class Button:
     key: str
@@ -332,15 +373,30 @@ class Renderer:
         add("brush_eraser", "Eraser", x0, 191, w)
         add("maze", "DFS Maze (M)", x0, 244, half)
         add("terrain", "Terrain Map (T)", x0 + half + gap, 244, half)
-        add("run", "Run Search (SPACE)", x0, 297, w)
-        add("benchmark", "Benchmark Both (X)", x0, 331, w)
-        add("reset", "Reset Path (R)", x0, 365, half)
-        add("clear", "Clear All (C)", x0 + half + gap, 365, half)
-        add("movement", "4-Directional", x0, 419, w)
+        preset_gap = 4
+        preset_w = (w - preset_gap * 3) // 4
+        for index, (preset, label) in enumerate((
+            ("F1", "F1 U-Trap"), ("F2", "F2 Swamp"),
+            ("F3", "F3 Pinch"), ("F4", "F4 Open"),
+        )):
+            add(f"preset_{preset.lower()}", label,
+                x0 + index * (preset_w + preset_gap), 298, preset_w)
+        add("run", "Run Search (SPACE)", x0, 352, w)
+        add("benchmark", "Benchmark Both (X)", x0, 384, w)
+        add("reset", "Reset Path (R)", x0, 416, half)
+        add("clear", "Clear All (C)", x0 + half + gap, 416, half)
+        add("movement", "4-Directional", x0, 465, w)
         speed_gap = 5
         speed_w = (w - speed_gap * 3) // 4
         for i, label in enumerate(("1 Slow", "2 Normal", "3 Fast", "4 Instant"), 1):
-            add(f"speed_{i}", label, x0 + (i - 1) * (speed_w + speed_gap), 473, speed_w)
+            add(f"speed_{i}", label, x0 + (i - 1) * (speed_w + speed_gap), 516, speed_w)
+        file_gap = 9
+        file_w = (w - file_gap * 2) // 3
+        for index, (key, label) in enumerate((
+            ("save_map", "Save Map (K)"), ("load_map", "Load Map (L)"),
+            ("screenshot", "Screenshot (P)"),
+        )):
+            add(key, label, x0 + index * (file_w + file_gap), 567, file_w)
 
     def label(self, text: str, pos: tuple[int, int], color: tuple[int, int, int],
               font: pygame.font.Font | None = None) -> None:
@@ -430,10 +486,12 @@ class Renderer:
         self.section("SEARCH ALGORITHM", 54)
         self.section("CELL BRUSH", 108)
         self.section("MAP GENERATORS", 228)
-        self.section("ACTIONS", 282)
-        self.section("MOVEMENT", 404)
-        self.section("ANIMATION SPEED", 457)
-        self.section("LIVE BENCHMARK ANALYTICS", 511)
+        self.section("VIVA DEMO PRESETS  ·  F1–F4", 282)
+        self.section("ACTIONS", 337)
+        self.section("MOVEMENT", 450)
+        self.section("ANIMATION SPEED", 500)
+        self.section("MAP FILES & EXPORT", 551)
+        self.section("LIVE BENCHMARK ANALYTICS", 603)
 
         mouse = pygame.mouse.get_pos()
         for key, button in self.buttons.items():
@@ -448,6 +506,9 @@ class Renderer:
                 label = "8-Directional" if app.diagonal else "4-Directional"
             elif key == "values":
                 label = "Values: On" if app.show_values else "Toggle Values"
+            elif key.startswith("preset_"):
+                preset = key.removeprefix("preset_").upper()
+                label = f"{preset} ✓" if app.active_preset == preset else button.label
             rendered = self.small.render(label, True, TEXT if active or hovered else (202, 212, 225))
             screen.blit(rendered, rendered.get_rect(center=button.rect.center))
 
@@ -457,7 +518,7 @@ class Renderer:
         self.label(text, (GRID_WIDTH + 17, y), (132, 153, 177), self.section_font)
 
     def draw_analytics(self, app: "PathPlanningApp") -> None:
-        x, y, width, height = GRID_WIDTH + 16, 532, SIDEBAR_WIDTH - 32, 254
+        x, y, width, height = GRID_WIDTH + 16, 620, SIDEBAR_WIDTH - 32, 174
         card = pygame.Rect(x, y, width, height)
         pygame.draw.rect(self.screen, (27, 37, 51), card, border_radius=10)
         pygame.draw.rect(self.screen, (56, 76, 98), card, 1, border_radius=10)
@@ -494,13 +555,14 @@ class Renderer:
             ("OPTIMAL COST", cost_text),
         ]
         for index, (label, value) in enumerate(rows):
-            yy = y + 13 + index * 27
+            yy = y + 9 + index * 21
             self.label(label, (x + 11, yy), (132, 153, 177), self.section_font)
             self.label(value, (x + 115, yy - 1), TEXT, self.small)
         path_cells = str(app.path_length) if app.path_length is not None else "—"
         path_cost = f"{app.path_cost:.3f}" if app.path_cost is not None else "—"
-        self.label("CURRENT PATH", (x + 11, y + 148), (132, 153, 177), self.section_font)
-        self.label(f"{path_cells} cells  ·  cost {path_cost}", (x + 115, y + 147), TEXT, self.small)
+        self.label("PATH / ROBOT", (x + 11, y + 118), (132, 153, 177), self.section_font)
+        self.label(f"{path_cells} cells · {path_cost} / {app.robot_cost:.3f}",
+                   (x + 103, y + 118), TEXT, self.tiny)
         hover = app.hover_info(pygame.mouse.get_pos()) if app.show_values else None
         if hover:
             cell, values = hover
@@ -508,21 +570,20 @@ class Renderer:
             h = f"{values['h']:.9g}"
             f = "—" if values["f"] is None else f"{values['f']:.9g}"
             hover_text = f"g {g} · h {h} · f {f}"
-            self.label(f"CELL {cell[0]},{cell[1]}", (x + 11, y + 174), (132, 153, 177), self.section_font)
-            self.label(hover_text, (x + 83, y + 174), TEXT, self.tiny)
+            self.label(f"CELL {cell[0]},{cell[1]}", (x + 11, y + 139), (132, 153, 177), self.section_font)
+            self.label(hover_text, (x + 83, y + 139), TEXT, self.tiny)
         else:
             hover_text = "Press V · hover a grid cell"
-            self.label("HOVER g/h/f", (x + 11, y + 174), (132, 153, 177), self.section_font)
-            self.label(hover_text, (x + 115, y + 173), TEXT, self.small)
-        pygame.draw.line(self.screen, (56, 76, 98), (x + 10, y + 201), (x + width - 10, y + 201), 1)
-        self.label(f"ROBOT COST  {app.robot_cost:.3f}", (x + 11, y + 207), (79, 231, 205), self.body)
+            self.label("HOVER g/h/f", (x + 11, y + 139), (132, 153, 177), self.section_font)
+            self.label(hover_text, (x + 115, y + 138), TEXT, self.small)
+        pygame.draw.line(self.screen, (56, 76, 98), (x + 10, y + 158), (x + width - 10, y + 158), 1)
         if app.searching:
             status = f"{app.algorithm.name} expanding · {app.explored:,} nodes"
         elif app.robot_path:
             status = "Robot traversing optimal path" if app.robot_is_moving else app.status
         else:
             status = app.status
-        self.label(status[:39], (x + 11, y + 231), MUTED, self.small)
+        self.label(status[:39], (x + 11, y + 159), MUTED, self.tiny)
 
     def draw_help_modal(self) -> None:
         self.screen.blit(self.modal_overlay, (0, 0))
@@ -545,6 +606,7 @@ class Renderer:
             "W / S / E: Wall / Sand / Water brush      M / T: maze / terrain map",
             "Space: run search      X: benchmark both      R: reset path      C: clear all",
             "1–4: animation speed      V: g(n) heatmap and hover inspector",
+            "F1–F4: Viva presets      K / L: save / load map      P: screenshot",
             "H or ?: toggle this help panel      Esc: close this panel",
         ]
         self._modal_lines(key_lines, modal.x + 28, modal.y + 252)
@@ -588,6 +650,7 @@ class PathPlanningApp:
         self.benchmark_active = False
         self.benchmark_grid: Grid | None = None
         self.search_grid: Grid | None = None
+        self.active_preset: str | None = None
         self.show_values = False
         self.show_help = False
         self.reset_path()
@@ -828,6 +891,8 @@ class PathPlanningApp:
         return True
 
     def button_active(self, key: str) -> bool:
+        if key.startswith("preset_"):
+            return self.active_preset == key.removeprefix("preset_").upper()
         if key == "algo_astar":
             return self.algorithm.name == "A*"
         if key == "algo_ucs":
@@ -845,7 +910,9 @@ class PathPlanningApp:
         return False
 
     def activate_button(self, key: str) -> None:
-        if key == "algo_astar":
+        if key.startswith("preset_"):
+            self.load_preset(key.removeprefix("preset_").upper())
+        elif key == "algo_astar":
             self.algorithm = self.algorithms["A*"]
             self.reset_path_only()
         elif key == "algo_ucs":
@@ -855,11 +922,13 @@ class PathPlanningApp:
             self.brush = "start_goal" if key == "brush_start" else key.removeprefix("brush_")
         elif key == "maze":
             MazeGenerator.generate(self.grid)
+            self.active_preset = None
             self.marker_next = "goal"
             self.reset_path_only()
             self.status = "Perfect DFS maze generated"
         elif key == "terrain":
             MazeGenerator.scatter_terrain(self.grid)
+            self.active_preset = None
             self.reset_path_only()
             self.status = "Weighted terrain scattered"
         elif key == "run":
@@ -880,10 +949,135 @@ class PathPlanningApp:
             self.show_values = not self.show_values
         elif key == "help":
             self.show_help = not self.show_help
+        elif key == "save_map":
+            self.save_map()
+        elif key == "load_map":
+            self.load_map()
+        elif key == "screenshot":
+            self.export_screenshot()
+
+    def load_preset(self, preset: str) -> None:
+        self.diagonal = load_viva_preset(self.grid, preset)
+        self.active_preset = preset
+        self.marker_next = "goal"
+        self.reset_path_only()
+        self.status = f"Loaded {preset}: {VIVA_PRESET_NAMES[preset]}"
+
+    def save_map(self, path: str | None = None) -> str | None:
+        map_path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_map.json")
+        data = {
+            "version": 1,
+            "rows": ROWS,
+            "cols": COLS,
+            "start": list(self.grid.start) if self.grid.start else None,
+            "goal": list(self.grid.goal) if self.grid.goal else None,
+            "walls": [list(cell) for cell in sorted(self.grid.walls())],
+            "terrain": [
+                {"cell": [r, c], "type": self.grid.spots[r][c].terrain}
+                for r in range(ROWS) for c in range(COLS)
+                if self.grid.spots[r][c].terrain in ("sand", "water")
+            ],
+            "diagonal": self.diagonal,
+            "algorithm": self.algorithm.name,
+            "speed": self.speed,
+            "brush": self.brush,
+        }
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(map_path)), exist_ok=True)
+            with open(map_path, "w", encoding="utf-8") as map_file:
+                json.dump(data, map_file, indent=2)
+                map_file.write("\n")
+            self.status = f"Map saved: {os.path.basename(map_path)}"
+            return map_path
+        except OSError as error:
+            self.status = f"Map save failed: {error}"
+            return None
+
+    def load_map(self, path: str | None = None) -> bool:
+        map_path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_map.json")
+        try:
+            with open(map_path, "r", encoding="utf-8") as map_file:
+                data = json.load(map_file)
+            if not isinstance(data, dict):
+                raise ValueError("Map root must be an object")
+            if data.get("version") != 1 or data.get("rows") != ROWS or data.get("cols") != COLS:
+                raise ValueError("Unsupported map version or dimensions")
+
+            loaded = Grid()
+
+            def read_cell(value: object, field: str) -> Cell | None:
+                if value is None:
+                    return None
+                if (not isinstance(value, list) or len(value) != 2
+                        or any(type(axis) is not int for axis in value)):
+                    raise ValueError(f"Invalid {field} coordinate")
+                cell = (value[0], value[1])
+                if not loaded.in_bounds(cell):
+                    raise ValueError(f"{field} is outside the grid")
+                return cell
+
+            loaded.start = read_cell(data.get("start"), "start")
+            loaded.goal = read_cell(data.get("goal"), "goal")
+            if loaded.start is not None and loaded.start == loaded.goal:
+                raise ValueError("Start and goal must be different cells")
+            walls, terrain = data.get("walls", []), data.get("terrain", [])
+            if not isinstance(walls, list) or not isinstance(terrain, list):
+                raise ValueError("Walls and terrain must be lists")
+            for item in walls:
+                cell = read_cell(item, "wall")
+                if cell in (loaded.start, loaded.goal):
+                    raise ValueError("An endpoint cannot also be a wall")
+                loaded.set_terrain(cell, "wall")  # type: ignore[arg-type]
+            for item in terrain:
+                if not isinstance(item, dict) or item.get("type") not in ("sand", "water"):
+                    raise ValueError("Invalid terrain entry")
+                cell = read_cell(item.get("cell"), "terrain")
+                if cell in (loaded.start, loaded.goal) or loaded.is_wall(cell):  # type: ignore[arg-type]
+                    raise ValueError("Terrain cannot overlap an endpoint or wall")
+                loaded.set_terrain(cell, item["type"])  # type: ignore[arg-type]
+
+            algorithm, speed = data.get("algorithm", "A*"), data.get("speed", 2)
+            brush = data.get("brush", "start_goal")
+            diagonal = data.get("diagonal", False)
+            if algorithm not in self.algorithms or type(speed) is not int or speed not in (1, 2, 3, 4):
+                raise ValueError("Invalid algorithm or speed setting")
+            if brush not in ("start_goal", "wall", "sand", "water", "eraser"):
+                raise ValueError("Invalid brush setting")
+            if type(diagonal) is not bool:
+                raise ValueError("Movement mode must be a boolean")
+
+            self.grid = loaded
+            self.algorithm = self.algorithms[algorithm]
+            self.speed, self.brush, self.diagonal = speed, brush, diagonal
+            self.marker_next = "start" if loaded.start is None else "goal"
+            self.active_preset = None
+            self.reset_path_only()
+            self.status = f"Map loaded: {os.path.basename(map_path)}"
+            return True
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as error:
+            self.status = f"Map load failed: {error}"
+            return False
+
+    def export_screenshot(self, directory: str | None = None) -> str | None:
+        folder = directory or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", "screenshots")
+        filename = f"robot_path_planner_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+        screenshot_path = os.path.join(folder, filename)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            self.renderer.draw(self)
+            pygame.display.flip()
+            pygame.image.save(self.screen, screenshot_path)
+            self.status = f"Screenshot saved: {filename}"
+            return screenshot_path
+        except (OSError, pygame.error) as error:
+            self.status = f"Screenshot failed: {error}"
+            return None
 
     def clear_board(self) -> None:
         self.grid.clear()
         self.marker_next = "start"
+        self.active_preset = None
         self.reset_path_only()
         self.status = "Board cleared"
 
@@ -925,6 +1119,7 @@ class PathPlanningApp:
         self.reset_search_state()
 
     def reset_search_state(self) -> None:
+        self.active_preset = None
         self.reset_path_only()
         if self.grid.start and self.grid.goal:
             self.status = "Board edited · ready"
@@ -937,6 +1132,9 @@ class PathPlanningApp:
             pygame.K_SPACE: "run", pygame.K_x: "benchmark", pygame.K_r: "reset",
             pygame.K_c: "clear", pygame.K_d: "movement",
             pygame.K_v: "values", pygame.K_h: "help",
+            pygame.K_F1: "preset_f1", pygame.K_F2: "preset_f2",
+            pygame.K_F3: "preset_f3", pygame.K_F4: "preset_f4",
+            pygame.K_k: "save_map", pygame.K_l: "load_map", pygame.K_p: "screenshot",
             pygame.K_1: "speed_1", pygame.K_2: "speed_2",
             pygame.K_3: "speed_3", pygame.K_4: "speed_4",
         }
@@ -986,6 +1184,7 @@ class PathPlanningApp:
             self.advance_search()
             self.robot_state()
             self.renderer.draw(self)
+            pygame.display.flip()
             self.clock.tick(FPS)
         pygame.quit()
 

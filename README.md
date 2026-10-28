@@ -1,5 +1,7 @@
 # Robot Path Planning Simulator
 
+[![CI](https://github.com/moonylit/robot-path-planner/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moonylit/robot-path-planner/actions/workflows/ci.yml)
+
 ## Project metadata
 
 | Field | Details |
@@ -149,7 +151,23 @@ The open grid highlights the benefit of an accurate diagonal heuristic. The DFS 
 | **Movement** · `D` | Toggle 4- and 8-directional movement |
 | **1 Slow / 2 Normal / 3 Fast / 4 Instant** | Set search expansion speed |
 | **Toggle Values** · `V` | Show the explored-cell `g(n)` heatmap and hover inspector |
+| **Viva presets** · `F1`–`F4` | Load deterministic examiner-ready concept maps |
+| **Save / Load Map** · `K` / `L` | Save or restore a validated `custom_map.json` layout |
+| **Screenshot** · `P` | Export the current window to `assets/screenshots/` |
 | **Help** · `H` or `?` | Open the controls and formula modal; `Esc` closes it |
+
+## Viva Demo Presets (`F1`–`F4`)
+
+Each preset clears the current board, places both endpoints, configures the intended movement model, and is ready to search immediately. The sidebar buttons provide the same actions as the function keys.
+
+| Key | Showcase | What it demonstrates |
+|---|---|---|
+| `F1` | **The U-Trap (Concave Obstacle)** | A greedy Manhattan heuristic points toward the goal through a concave U-shaped barrier. A* initially explores the tempting dead end, then backs out to the opening; UCS expands by path cost without heuristic direction. |
+| `F2` | **The Swamp Detour (Weighted Cost Proof)** | Sand and water fill the direct corridor while normal-cost cells remain open around it. Both algorithms choose a route with more cells when its accumulated `g(n)` is cheaper than crossing the weighted terrain. |
+| `F3` | **The Narrow Bottleneck** | A full-height divider leaves one opening between the two rooms. A* directs its frontier toward the opening using `h(n)`; UCS expands the first room in increasing cost contours. |
+| `F4` | **Open Field Race** | An unobstructed corner-to-corner map uses 8-directional movement. Compare A*'s diagonal-aware directional focus with UCS's broader equal-cost frontier, while both return the same optimal cost. |
+
+Use **Benchmark Both (X)** after loading a preset to compare explored nodes, run time, peak frontier, and optimal path cost on the same layout.
 
 ### Dynamic obstacle demonstration
 
