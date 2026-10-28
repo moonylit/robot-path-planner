@@ -6,9 +6,8 @@ import heapq
 import itertools
 import math
 import random
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterator
 
 import pygame
@@ -34,11 +33,15 @@ GRID_LINE = (217, 223, 231)
 CYAN = (20, 190, 215)
 RED = (229, 70, 78)
 WALL = (30, 35, 43)
+SAND = (241, 218, 150)
+WATER = (119, 185, 229)
 OPEN_COLOR = (166, 222, 248)
 CLOSED_COLOR = (255, 166, 73)
 PATH_COLOR = (37, 190, 166)
-SPEED_INTERVALS = {1: 110, 2: 30, 3: 0}
+SPEED_INTERVALS = {1: 1000 / 15, 2: 1000 / 60, 3: 1000 / 240, 4: 0}
 DIAGONAL_COST = math.sqrt(2)
+TERRAIN_COSTS = {"normal": 1.0, "sand": 3.0, "water": 5.0}
+BRUSHES = {"wall": "Wall [W]", "sand": "Sand Cost:3 [S]", "water": "Water Cost:5 [E]"}
 Cell = tuple[int, int]
 
 
@@ -49,6 +52,7 @@ class Spot:
     row: int
     col: int
     wall: bool = False
+    terrain: str = "normal"
 
     @property
     def position(self) -> Cell:
@@ -73,6 +77,16 @@ class Grid:
     def set_wall(self, cell: Cell, value: bool) -> None:
         if self.in_bounds(cell) and cell not in (self.start, self.goal):
             self.spots[cell[0]][cell[1]].wall = value
+            self.spots[cell[0]][cell[1]].terrain = "normal"
+
+    def set_terrain(self, cell: Cell, terrain: str) -> None:
+        if self.in_bounds(cell) and cell not in (self.start, self.goal):
+            spot = self.spots[cell[0]][cell[1]]
+            spot.wall = terrain == "wall"
+            spot.terrain = terrain if terrain in TERRAIN_COSTS else "normal"
+
+    def terrain_cost(self, cell: Cell) -> float:
+        return TERRAIN_COSTS[self.spots[cell[0]][cell[1]].terrain]
 
     def walls(self) -> set[Cell]:
         return {spot.position for row in self.spots for spot in row if spot.wall}
@@ -91,15 +105,16 @@ class Grid:
                 # Prevent squeezing diagonally between two blocked cells.
                 if self.is_wall((r + dr, c)) or self.is_wall((r, c + dc)):
                     continue
-                result.append((nxt, DIAGONAL_COST))
+                result.append((nxt, DIAGONAL_COST * self.terrain_cost(nxt)))
             else:
-                result.append((nxt, 1.0))
+                result.append((nxt, self.terrain_cost(nxt)))
         return result
 
     def clear(self) -> None:
         for row in self.spots:
             for spot in row:
                 spot.wall = False
+                spot.terrain = "normal"
         self.start = self.goal = None
 
 
@@ -169,41 +184,71 @@ class UCS(SearchAlgorithm):
 
 
 class AStar(SearchAlgorithm):
-    """A*: Manhattan heuristic in 4-dir mode, Euclidean in 8-dir mode."""
+    """A*: Manhattan in 4-dir and Octile in 8-dir, scaled by min terrain cost."""
 
     name = "A*"
 
     def heuristic(self, cell: Cell, goal: Cell, diagonal: bool) -> float:
         dr, dc = abs(cell[0] - goal[0]), abs(cell[1] - goal[1])
-        return math.hypot(dr, dc) if diagonal else float(dr + dc)
+        if diagonal:
+            high, low = max(dr, dc), min(dr, dc)
+            return (high + (DIAGONAL_COST - 1) * low) * min(TERRAIN_COSTS.values())
+        return float(dr + dc) * min(TERRAIN_COSTS.values())
 
 
 class MazeGenerator:
-    """Create a random obstacle field and carve an unobstructed corridor."""
+    """Generate a perfect maze by randomized DFS recursive backtracking."""
 
     @staticmethod
-    def generate(grid: Grid, density: float = 0.28, seed: int | None = None) -> None:
+    def generate(grid: Grid, seed: int | None = None) -> None:
         rng = random.Random(seed)
-        protected = {cell for cell in (grid.start, grid.goal) if cell is not None}
+        # Maze nodes occupy every other cell; intermediate cells are passages.
         for row in grid.spots:
             for spot in row:
-                spot.wall = spot.position not in protected and rng.random() < density
+                spot.wall = True
+                spot.terrain = "normal"
+        nodes = [(r, c) for r in range(0, ROWS, 2) for c in range(0, COLS, 2)]
+        visited = {nodes[0]}
+        grid.spots[0][0].wall = False
+        stack = [nodes[0]]
+        while stack:
+            r, c = stack[-1]
+            candidates = [(r + dr, c + dc, dr, dc) for dr, dc in
+                          ((-2, 0), (0, 2), (2, 0), (0, -2))
+                          if 0 <= r + dr < ROWS and 0 <= c + dc < COLS
+                          and (r + dr, c + dc) not in visited]
+            if not candidates:
+                stack.pop()
+                continue
+            nr, nc, dr, dc = rng.choice(candidates)
+            grid.spots[r + dr // 2][c + dc // 2].wall = False
+            grid.spots[nr][nc].wall = False
+            visited.add((nr, nc))
+            stack.append((nr, nc))
 
-        # Carve a passable L-shaped route, guaranteeing a solution even before
-        # the user places endpoints (in that case carve through the board center).
-        start = grid.start or (ROWS // 2, 0)
-        goal = grid.goal or (ROWS // 2, COLS - 1)
-        r, c = start
-        target_r, target_c = goal
-        step_r = 1 if target_r >= r else -1
-        while r != target_r:
-            grid.spots[r][c].wall = False
-            r += step_r
-        step_c = 1 if target_c >= c else -1
-        while c != target_c:
-            grid.spots[r][c].wall = False
-            c += step_c
-        grid.spots[target_r][target_c].wall = False
+        # Seed/goal cells are put on the connected maze tree so M always yields
+        # a solvable demonstration regardless of the previous endpoint choice.
+        grid.start = (0, 0)
+        grid.goal = (ROWS - 2, COLS - 2)
+
+    @staticmethod
+    def scatter_terrain(grid: Grid, seed: int | None = None) -> None:
+        """Scatter clustered weighted terrain while retaining all walls."""
+        rng = random.Random(seed)
+        for row in grid.spots:
+            for spot in row:
+                if not spot.wall:
+                    spot.terrain = "normal"
+        for _ in range(22):
+            center_r, center_c = rng.randrange(ROWS), rng.randrange(COLS)
+            radius_r, radius_c = rng.randrange(2, 6), rng.randrange(2, 6)
+            terrain = rng.choice(("sand", "water"))
+            for r in range(max(0, center_r - radius_r), min(ROWS, center_r + radius_r + 1)):
+                for c in range(max(0, center_c - radius_c), min(COLS, center_c + radius_c + 1)):
+                    cell = (r, c)
+                    if cell not in (grid.start, grid.goal) and not grid.is_wall(cell):
+                        if ((r - center_r) / radius_r) ** 2 + ((c - center_c) / radius_c) ** 2 <= 1:
+                            grid.spots[r][c].terrain = terrain
 
 
 class Renderer:
@@ -214,6 +259,12 @@ class Renderer:
         self.font = pygame.font.SysFont("segoeui", 16)
         self.small = pygame.font.SysFont("segoeui", 13)
         self.title = pygame.font.SysFont("segoeui", 20, bold=True)
+        self.terrain_tints = {
+            "sand": pygame.Surface((CELL_SIZE - 1, CELL_SIZE - 1), pygame.SRCALPHA),
+            "water": pygame.Surface((CELL_SIZE - 1, CELL_SIZE - 1), pygame.SRCALPHA),
+        }
+        self.terrain_tints["sand"].fill((*SAND, 210))
+        self.terrain_tints["water"].fill((*WATER, 210))
 
     def label(self, text: str, pos: tuple[int, int], color: tuple[int, int, int],
               font: pygame.font.Font | None = None) -> None:
@@ -224,7 +275,7 @@ class Renderer:
         screen.fill(BG)
         self.label("ROBOT PATH PLANNING", (15, 12), TEXT, self.title)
         self.label("INT3120 AI  |  Group 7", (280, 19), MUTED, self.small)
-        self.label("A: A*   U: UCS   D: Movement   M: Maze   Space: Run   X: Benchmark",
+        self.label("Brush W/S/E | Maze M | Terrain T | Benchmark X",
                    (388, 19), MUTED, self.small)
 
         board_y = HEADER_HEIGHT
@@ -241,9 +292,19 @@ class Renderer:
                     color = CLOSED_COLOR
                 elif cell in app.open_set:
                     color = OPEN_COLOR
+                elif app.grid.spots[r][c].terrain in self.terrain_tints:
+                    color = None
                 if color != EMPTY:
-                    pygame.draw.rect(screen, color, (c * CELL_SIZE + 1, board_y + r * CELL_SIZE + 1,
-                                                     CELL_SIZE - 1, CELL_SIZE - 1))
+                    if color is not None:
+                        pygame.draw.rect(screen, color, (c * CELL_SIZE + 1, board_y + r * CELL_SIZE + 1,
+                                                         CELL_SIZE - 1, CELL_SIZE - 1))
+                terrain = app.grid.spots[r][c].terrain
+                if not app.grid.is_wall(cell) and terrain in self.terrain_tints and cell not in app.path and cell not in app.closed and cell not in app.open_set:
+                    tile_pos = (c * CELL_SIZE + 1, board_y + r * CELL_SIZE + 1)
+                    screen.blit(self.terrain_tints[terrain], tile_pos)
+                    multiplier = "3" if terrain == "sand" else "5"
+                    marker = self.small.render(multiplier, True, (75, 63, 39) if terrain == "sand" else (25, 55, 80))
+                    screen.blit(marker, marker.get_rect(center=(tile_pos[0] + 9, tile_pos[1] + 9)))
         for c in range(COLS + 1):
             pygame.draw.line(screen, GRID_LINE, (c * CELL_SIZE, board_y),
                              (c * CELL_SIZE, board_y + GRID_HEIGHT))
@@ -259,11 +320,11 @@ class Renderer:
         cost = f"{app.path_cost:.3f}" if app.path_cost is not None else "—"
         runtime = f"{app.runtime_ms:.3f} ms" if app.runtime_ms is not None else "—"
         mode = "8-dir" if app.diagonal else "4-dir"
-        speed = {1: "Slow", 2: "Medium", 3: "Instant"}[app.speed]
-        self.label(f"ALGORITHM  {app.algorithm.name}     MODE  {mode}     SPEED  {speed}",
+        brush = BRUSHES[app.brush]
+        self.label(f"{app.algorithm.name}  |  {mode}  |  Speed {app.speed}  |  Brush: {brush}",
                    (14, fy + 10), TEXT, self.small)
         path_length = str(app.path_length) if app.path_length is not None else "—"
-        self.label(f"NODES  {app.explored}     PATH LENGTH  {path_length} / COST  {cost}     RUNTIME  {runtime}",
+        self.label(f"Nodes {app.explored}  |  Path length {path_length} cells  |  Total cost {cost}  |  Runtime {runtime}",
                    (14, fy + 33), TEXT, self.small)
         status_color = (116, 224, 168) if "found" in app.status.lower() else MUTED
         self.label(f"STATUS  {app.status}", (14, fy + 56), status_color, self.small)
@@ -288,12 +349,13 @@ class Renderer:
 
     def draw_legend(self, y: int) -> None:
         items = [(CYAN, "Start"), (RED, "Goal"), (WALL, "Wall"),
+                 (SAND, "Sand ×3"), (WATER, "Water ×5"),
                  (OPEN_COLOR, "Open"), (CLOSED_COLOR, "Closed"), (PATH_COLOR, "Path")]
         x = 14
         for color, label in items:
             pygame.draw.rect(self.screen, color, (x, y + 2, 12, 12), border_radius=2)
             self.label(label, (x + 17, y), MUTED, self.small)
-            x += 91
+            x += 82
 
 
 class PathPlanningApp:
@@ -310,6 +372,7 @@ class PathPlanningApp:
         self.algorithm: SearchAlgorithm = self.algorithms["A*"]
         self.diagonal = False
         self.speed = 2
+        self.brush = "wall"
         self.reset_path()
         self.benchmark_results: dict[str, SearchResult] = {}
         self.benchmark_queue: list[str] = []
@@ -326,10 +389,12 @@ class PathPlanningApp:
         self.searching = False
         self.search_iterator = None
         self.last_advance = 0
+        self.step_accumulator = 0.0
         self.batch_limit = 1
 
     def reset_path_only(self) -> None:
         self.reset_path()
+        self._benchmark_active = False
         self.benchmark_results = {}
         self.benchmark_queue = []
         self.status = "Path reset"
@@ -385,10 +450,16 @@ class PathPlanningApp:
             return
         now = pygame.time.get_ticks()
         interval = SPEED_INTERVALS[self.speed]
-        if interval and now - self.last_advance < interval:
-            return
+        elapsed = max(0, now - self.last_advance)
         self.last_advance = now
-        self.batch_limit = 220 if self.speed == 3 else 1
+        if self.speed == 4:
+            self.batch_limit = 100000
+        else:
+            self.step_accumulator += elapsed
+            self.batch_limit = int(self.step_accumulator / interval)
+            if self.batch_limit == 0:
+                return
+            self.step_accumulator -= self.batch_limit * interval
         for _ in range(self.batch_limit):
             try:
                 step = next(self.search_iterator)
@@ -406,7 +477,7 @@ class PathPlanningApp:
             self.explored = result.explored
             self.path = set(result.path)
             self.path_cost = result.cost
-            self.path_length = max(0, len(result.path) - 1) if result.path else None
+            self.path_length = len(result.path) if result.path else None
             self.runtime_ms = result.runtime_ms
             self.status = "Path found" if result.path else "No path found"
             if self.benchmark_queue or self._benchmark_active:
@@ -437,7 +508,7 @@ class PathPlanningApp:
             return
         self.reset_path_only()
         if event.button == 3:
-            self.grid.set_wall(cell, False)
+            self.grid.set_terrain(cell, "normal")
             if cell == self.grid.start:
                 self.grid.start = None
             if cell == self.grid.goal:
@@ -451,7 +522,7 @@ class PathPlanningApp:
                 self.grid.goal = cell
                 self.status = "Ready to search"
             else:
-                self.grid.set_wall(cell, True)
+                self.grid.set_terrain(cell, self.brush)
 
     def handle_events(self) -> bool:
         for event in pygame.event.get():
@@ -471,7 +542,20 @@ class PathPlanningApp:
                 elif event.key == pygame.K_m:
                     MazeGenerator.generate(self.grid)
                     self.reset_path_only()
-                    self.status = "Maze generated — corridor is clear"
+                    self.status = "Perfect DFS maze generated"
+                elif event.key == pygame.K_t:
+                    MazeGenerator.scatter_terrain(self.grid)
+                    self.reset_path_only()
+                    self.status = "Weighted terrain scattered"
+                elif event.key == pygame.K_w:
+                    self.brush = "wall"
+                    self.status = "Wall brush selected"
+                elif event.key == pygame.K_s:
+                    self.brush = "sand"
+                    self.status = "Sand brush selected (cost 3)"
+                elif event.key == pygame.K_e:
+                    self.brush = "water"
+                    self.status = "Water brush selected (cost 5)"
                 elif event.key == pygame.K_SPACE:
                     self.benchmark_active = False
                     self.start_search()
@@ -482,19 +566,22 @@ class PathPlanningApp:
                     self.clear_board()
                 elif event.key == pygame.K_r:
                     self.reset_path_only()
-                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
                     self.speed = event.key - pygame.K_0
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 self.edit_cell(event)
             elif event.type == pygame.MOUSEMOTION and event.buttons[0]:
                 cell = self.board_cell(event.pos)
                 if cell is not None and self.grid.start is not None and self.grid.goal is not None:
-                    self.grid.set_wall(cell, True)
+                    self.grid.set_terrain(cell, self.brush)
                     self.reset_path_only()
             elif event.type == pygame.MOUSEMOTION and event.buttons[2]:
                 cell = self.board_cell(event.pos)
-                if cell is not None:
-                    self.grid.set_wall(cell, False)
+                if cell is not None and cell not in (self.grid.start, self.grid.goal):
+                    spot = self.grid.spots[cell[0]][cell[1]]
+                    if spot.wall or spot.terrain != "normal":
+                        self.grid.set_terrain(cell, "normal")
+                        self.reset_path_only()
         return True
 
     def run(self) -> None:
