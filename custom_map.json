@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "rows": 40,
+  "cols": 40,
+  "start": [
+    26,
+    29
+  ],
+  "goal": [
+    13,
+    19
+  ],
+  "walls": [],
+  "terrain": [],
+  "diagonal": false,
+  "algorithm": "UCS",
+  "speed": 4,
+  "brush": "start_goal"
+}

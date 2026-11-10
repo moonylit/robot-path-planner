@@ -1,5 +1,3 @@
-"""Reproducible A* vs UCS benchmarks for four 40x40 grid topologies."""
-
 from __future__ import annotations
 
 import statistics
@@ -72,8 +70,6 @@ def measure(name: str, grid: Grid, diagonal: bool) -> tuple[SearchResult, float,
         result = consume(algorithm_type(), grid.clone(), diagonal)
         durations.append((time.perf_counter() - started) * 1000)
 
-    # Profile memory in a separate run so tracemalloc overhead does not inflate
-    # the reported search execution time.
     tracemalloc.start()
     try:
         consume(algorithm_type(), grid.clone(), diagonal)
@@ -116,7 +112,7 @@ def main() -> None:
     table = markdown_table()
     print(table)
     OUTPUT_FILE.write_text(
-        "# Empirical Benchmark Results\n\n"
+        "Empirical Benchmark Results\n\n"
         "Python `time.perf_counter()` execution time averaged over three runs; "
         "peak Python memory measured separately with `tracemalloc`.\n\n"
         + table + "\n",

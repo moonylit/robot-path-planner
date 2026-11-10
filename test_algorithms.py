@@ -1,5 +1,3 @@
-"""Headless unit tests for path planning optimality and movement costs."""
-
 from __future__ import annotations
 
 import math
@@ -10,7 +8,6 @@ from main import (AStar, DIAGONAL_COST, Grid, MazeGenerator, SearchResult, UCS,
 
 
 def solve(algorithm: AStar | UCS, grid: Grid, diagonal: bool = False) -> SearchResult:
-    """Consume the animated search generator without opening a Pygame window."""
     assert grid.start is not None and grid.goal is not None
     for update in algorithm.steps(grid, grid.start, grid.goal, diagonal):
         if isinstance(update, SearchResult):
@@ -109,8 +106,8 @@ class VivaPresetTests(unittest.TestCase):
     def test_preset_layouts_demonstrate_their_concepts(self) -> None:
         grid = Grid()
         self.assertFalse(load_viva_preset(grid, "F1"))
-        self.assertTrue(grid.is_wall((25, 18)))  # U base closes the greedy route.
-        self.assertFalse(grid.is_wall((9, 18)))  # Escape is northward.
+        self.assertTrue(grid.is_wall((25, 18)))                                   
+        self.assertFalse(grid.is_wall((9, 18)))                        
 
         self.assertFalse(load_viva_preset(grid, "F2"))
         direct_cost = sum(
@@ -120,7 +117,7 @@ class VivaPresetTests(unittest.TestCase):
         result = solve(AStar(), grid)
         self.assertIsNotNone(result.cost)
         self.assertLess(result.cost or math.inf, direct_cost)
-        self.assertGreater(len(result.path), 34)  # The cheapest route takes a detour.
+        self.assertGreater(len(result.path), 34)                                      
 
         self.assertFalse(load_viva_preset(grid, "F3"))
         self.assertTrue(grid.is_wall((19, 20)))

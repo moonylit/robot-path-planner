@@ -1,7 +1,6 @@
-"""Robot Path Planning Simulator — A* and Uniform Cost Search with Pygame."""
+
 
 from __future__ import annotations
-
 import heapq
 import itertools
 import json
@@ -12,11 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterator
-
 import pygame
-
-
-# The canvas is exactly 800 x 800, with a 350-pixel interactive sidebar.
 ROWS = COLS = 40
 CELL_SIZE = 20
 GRID_WIDTH = COLS * CELL_SIZE
@@ -48,7 +43,7 @@ Cell = tuple[int, int]
 
 @dataclass
 class Spot:
-    """A grid cell and its persistent obstacle state."""
+    
 
     row: int
     col: int
@@ -61,7 +56,6 @@ class Spot:
 
 
 class Grid:
-    """Owns cells and provides movement-aware neighbors."""
 
     def __init__(self) -> None:
         self.spots = [[Spot(r, c) for c in range(COLS)] for r in range(ROWS)]
@@ -103,7 +97,7 @@ class Grid:
             if not self.in_bounds(nxt) or self.is_wall(nxt):
                 continue
             if dr and dc:
-                # Prevent squeezing diagonally between two blocked cells.
+                                                                         
                 if self.is_wall((r + dr, c)) or self.is_wall((r, c + dc)):
                     continue
                 result.append((nxt, DIAGONAL_COST * self.terrain_cost(nxt)))
@@ -148,7 +142,6 @@ class SearchProgress:
 
 
 class SearchAlgorithm:
-    """Shared priority-queue search engine; subclasses supply priority heuristic."""
 
     name = "Search"
 
@@ -177,8 +170,8 @@ class SearchAlgorithm:
             open_set.discard(current)
             closed.add(current)
             search_runtime += time.perf_counter() - phase_started
-            # These sets/maps are stable while the generator is suspended; the
-            # renderer reads them before the next expansion mutates them.
+                                                                              
+                                                                         
             yield SearchProgress(open_set, closed, len(closed),
                                  search_runtime * 1000, peak_frontier, costs)
 
@@ -211,13 +204,13 @@ class SearchAlgorithm:
 
 
 class UCS(SearchAlgorithm):
-    """Uniform Cost Search: frontier priority is accumulated cost g(n)."""
+    
 
     name = "UCS"
 
 
 class AStar(SearchAlgorithm):
-    """A*: Manhattan in 4-dir and Octile in 8-dir, scaled by min terrain cost."""
+    
 
     name = "A*"
 
@@ -230,12 +223,12 @@ class AStar(SearchAlgorithm):
 
 
 class MazeGenerator:
-    """Generate a perfect maze by randomized DFS recursive backtracking."""
+    
 
     @staticmethod
     def generate(grid: Grid, seed: int | None = None) -> None:
         rng = random.Random(seed)
-        # Maze nodes occupy every other cell; intermediate cells are passages.
+                                                                              
         for row in grid.spots:
             for spot in row:
                 spot.wall = True
@@ -259,14 +252,14 @@ class MazeGenerator:
             visited.add((nr, nc))
             stack.append((nr, nc))
 
-        # Seed/goal cells are put on the connected maze tree so M always yields
-        # a solvable demonstration regardless of the previous endpoint choice.
+                                                                               
+                                                                              
         grid.start = (0, 0)
         grid.goal = (ROWS - 2, COLS - 2)
 
     @staticmethod
     def scatter_terrain(grid: Grid, seed: int | None = None) -> None:
-        """Scatter clustered weighted terrain while retaining all walls."""
+        
         rng = random.Random(seed)
         for row in grid.spots:
             for spot in row:
@@ -293,13 +286,13 @@ VIVA_PRESET_NAMES = {
 
 
 def load_viva_preset(grid: Grid, preset: str) -> bool:
-    """Load a deterministic 40x40 viva map; return its diagonal-mode setting."""
+    
     if preset not in VIVA_PRESET_NAMES:
         raise ValueError(f"Unknown viva preset: {preset}")
     grid.clear()
     if preset == "F1":
-        # The opening of the U faces north; a goal to the right is deceptively
-        # close by h(n), but the optimal route must back out and go around.
+                                                                              
+                                                                           
         grid.start, grid.goal = (20, 18), (20, 34)
         for row in range(10, 26):
             grid.set_wall((row, 13), True)
@@ -330,7 +323,7 @@ class Button:
 
 
 class Renderer:
-    """Draw the 800px grid, clickable dark sidebar, analytics, and robot."""
+    
 
     def __init__(self, screen: pygame.Surface) -> None:
         self.screen = screen
@@ -630,7 +623,7 @@ class Renderer:
 
 
 class PathPlanningApp:
-    """Owns app state, sidebar actions, search control, and agent animation."""
+    
 
     def __init__(self) -> None:
         pygame.init()
@@ -733,7 +726,7 @@ class PathPlanningApp:
         self.search_iterator = self.algorithm.steps(self.benchmark_grid,
                                                     self.benchmark_grid.start,
                                                     self.benchmark_grid.goal,
-                                                    self.diagonal)  # type: ignore[arg-type]
+                                                    self.diagonal)                          
         self.searching = True
         self.last_advance = pygame.time.get_ticks()
 
@@ -852,8 +845,8 @@ class PathPlanningApp:
             return 0
         elapsed = max(0.0, time.perf_counter() - self.robot_started)
         if elapsed >= edges * self.robot_step_duration:
-            # A static displayed path can still be edited: replay its traversal
-            # from the original start to demonstrate a fresh detour.
+                                                                               
+                                                                    
             return 0
         segment_float = elapsed / self.robot_step_duration
         segment = min(edges - 1, int(segment_float))
@@ -870,8 +863,8 @@ class PathPlanningApp:
         source = self.robot_path[index]
         goal = self.grid.goal
         self.grid.start = source
-        # A robot may be standing on the injected cell; it must be able to
-        # leave that coordinate, so clear its source after placing the wall.
+                                                                          
+                                                                            
         spot = self.grid.spots[cell[0]][cell[1]]
         spot.wall = True
         spot.terrain = "normal"
@@ -1027,14 +1020,14 @@ class PathPlanningApp:
                 cell = read_cell(item, "wall")
                 if cell in (loaded.start, loaded.goal):
                     raise ValueError("An endpoint cannot also be a wall")
-                loaded.set_terrain(cell, "wall")  # type: ignore[arg-type]
+                loaded.set_terrain(cell, "wall")                          
             for item in terrain:
                 if not isinstance(item, dict) or item.get("type") not in ("sand", "water"):
                     raise ValueError("Invalid terrain entry")
                 cell = read_cell(item.get("cell"), "terrain")
-                if cell in (loaded.start, loaded.goal) or loaded.is_wall(cell):  # type: ignore[arg-type]
+                if cell in (loaded.start, loaded.goal) or loaded.is_wall(cell):                          
                     raise ValueError("Terrain cannot overlap an endpoint or wall")
-                loaded.set_terrain(cell, item["type"])  # type: ignore[arg-type]
+                loaded.set_terrain(cell, item["type"])                          
 
             algorithm, speed = data.get("algorithm", "A*"), data.get("speed", 2)
             brush = data.get("brush", "start_goal")
